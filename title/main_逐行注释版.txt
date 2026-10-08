@@ -1,0 +1,386 @@
+#include "stm32f10x.h" // 引入头文件
+#include "stm32f10x_tim.h" // 引入头文件
+#include "stm32f10x_exti.h" // 引入头文件
+
+// λDS18B20Ҫ΢뼶ȷƣ // 原有注释
+#define DQ_OUT  (*(volatile unsigned int *)((0x42000000 + (0x40010C0C - 0x40000000) * 32 + 7 * 4))) // 第6行代码
+#define DQ_IN   (*(volatile unsigned int *)((0x42000000 + (0x40010C08 - 0x40000000) * 32 + 7 * 4))) // 第7行代码
+
+// ȫֱ // 原有注释
+int current_temp = 25, temp_max = 35, temp_min = 30; // 第10行代码
+int last_temp = -999, last_max = -999, last_min = -999, last_hot = -1; // 第11行代码
+volatile int temp_flag = 0; // 第12行代码
+
+// ʱ // 原有注释
+void Delay_us(uint32_t us) { uint32_t d = (us * 3) / 5; while(d--); } // 第15行代码
+void Delay_ms(uint32_t ms) { while(ms--) Delay_us(1000); } // 第16行代码
+void Delay_DS18B20(int n) { while(n--); } // 第17行代码
+
+// GPIOʼ // 原有注释
+void GPIO_Init_Config(void) // 第20行代码
+{ // 第21行代码
+    GPIO_InitTypeDef g; // 第22行代码
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA | RCC_APB2Periph_GPIOB | RCC_APB2Periph_AFIO, ENABLE); // 第23行代码
+
+    g.GPIO_Pin = GPIO_Pin_1 | GPIO_Pin_2 | GPIO_Pin_3;  // LCD PA1-PA3 // 第25行代码
+    g.GPIO_Mode = GPIO_Mode_Out_PP; // 第26行代码
+    g.GPIO_Speed = GPIO_Speed_50MHz; // 第27行代码
+    GPIO_Init(GPIOA, &g); // 第28行代码
+
+    g.GPIO_Pin = 0xFF << 4; // 第30行代码
+    GPIO_Init(GPIOA, &g); // 第31行代码
+
+    g.GPIO_Pin = 0x1F; // 第33行代码
+    g.GPIO_Mode = GPIO_Mode_IPU; // 第34行代码
+    GPIO_Init(GPIOB, &g); // 第35行代码
+
+    g.GPIO_Pin = GPIO_Pin_5 | GPIO_Pin_6 | GPIO_Pin_7; // 第37行代码
+    g.GPIO_Mode = GPIO_Mode_Out_PP; // 第38行代码
+    GPIO_Init(GPIOB, &g); // 第39行代码
+
+    DQ_OUT = 1; // 第41行代码
+    GPIO_ResetBits(GPIOB, GPIO_Pin_5 | GPIO_Pin_6); // 第42行代码
+} // 第43行代码
+
+
+void TIM2_Init(void) // 第46行代码
+{ // 第47行代码
+    TIM_TimeBaseInitTypeDef t; // 第48行代码
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM2, ENABLE); // 第49行代码
+    t.TIM_Period = 9999; // 第50行代码
+    t.TIM_Prescaler = 399; // 第51行代码
+    t.TIM_ClockDivision = TIM_CKD_DIV1; // 第52行代码
+    t.TIM_CounterMode = TIM_CounterMode_Up; // 第53行代码
+    TIM_TimeBaseInit(TIM2, &t); // 第54行代码
+    TIM_ITConfig(TIM2, TIM_IT_Update, ENABLE); // 第55行代码
+    TIM_Cmd(TIM2, ENABLE); // 第56行代码
+} // 第57行代码
+
+
+void EXTI_Config(void) // 第60行代码
+{ // 第61行代码
+    EXTI_InitTypeDef e; // 第62行代码
+    uint8_t i; // 第63行代码
+
+    // PB0-PB3 Ϊ½ش // 原有注释
+    for(i = 0; i < 4; i++) // 第66行代码
+    { // 第67行代码
+        GPIO_EXTILineConfig(GPIO_PortSourceGPIOB, i); // 第68行代码
+        e.EXTI_Line = 1 << i; // 第69行代码
+        e.EXTI_Mode = EXTI_Mode_Interrupt; // 第70行代码
+        e.EXTI_Trigger = EXTI_Trigger_Falling; // 第71行代码
+        e.EXTI_LineCmd = ENABLE; // 第72行代码
+        EXTI_Init(&e); // 第73行代码
+    } // 第74行代码
+
+    // PB4 Ϊ˫شȱˮأ // 原有注释
+    GPIO_EXTILineConfig(GPIO_PortSourceGPIOB, 4); // 第77行代码
+    e.EXTI_Line = EXTI_Line4; // 第78行代码
+    e.EXTI_Trigger = EXTI_Trigger_Rising_Falling; // 第79行代码
+    EXTI_Init(&e); // 第80行代码
+} // 第81行代码
+
+// жȼ - ѭ // 原有注释
+void NVIC_Config(void) // 第84行代码
+{ // 第85行代码
+    NVIC_InitTypeDef n; // 第86行代码
+    uint8_t i; // 第87行代码
+
+    // TIM2ʱж - ȼ // 原有注释
+    n.NVIC_IRQChannel = TIM2_IRQn; // 第90行代码
+    n.NVIC_IRQChannelPreemptionPriority = 0; // 第91行代码
+    n.NVIC_IRQChannelSubPriority = 0; // 第92行代码
+    n.NVIC_IRQChannelCmd = ENABLE; // 第93行代码
+    NVIC_Init(&n); // 第94行代码
+
+    // EXTI0-EXTI4ж // 原有注释
+    for(i = 0; i < 5; i++) // 第97行代码
+    { // 第98行代码
+        n.NVIC_IRQChannel = EXTI0_IRQn + i;  // EXTI0EXTI4 // 第99行代码
+        n.NVIC_IRQChannelPreemptionPriority = 1; // 第100行代码
+        n.NVIC_IRQChannelSubPriority = i; // 第101行代码
+        n.NVIC_IRQChannelCmd = ENABLE; // 第102行代码
+        NVIC_Init(&n); // 第103行代码
+    } // 第104行代码
+} // 第105行代码
+
+// LCDд // 原有注释
+void LCD_Write_Cmd(uint8_t cmd) // 第108行代码
+{ // 第109行代码
+    GPIO_ResetBits(GPIOA, GPIO_Pin_1 | GPIO_Pin_2); // 第110行代码
+    GPIOA->ODR = (GPIOA->ODR & 0xF00F) | (cmd << 4); // 第111行代码
+    GPIO_SetBits(GPIOA, GPIO_Pin_3); // 第112行代码
+    Delay_us(5); // 第113行代码
+    GPIO_ResetBits(GPIOA, GPIO_Pin_3); // 第114行代码
+    Delay_us(50); // 第115行代码
+} // 第116行代码
+
+// LCDд // 原有注释
+void LCD_Write_Data(uint8_t data) // 第119行代码
+{ // 第120行代码
+    GPIO_SetBits(GPIOA, GPIO_Pin_1); // 第121行代码
+    GPIO_ResetBits(GPIOA, GPIO_Pin_2); // 第122行代码
+    GPIOA->ODR = (GPIOA->ODR & 0xF00F) | (data << 4); // 第123行代码
+    GPIO_SetBits(GPIOA, GPIO_Pin_3); // 第124行代码
+    Delay_us(5); // 第125行代码
+    GPIO_ResetBits(GPIOA, GPIO_Pin_3); // 第126行代码
+    Delay_us(50); // 第127行代码
+} // 第128行代码
+
+// LCDʼ // 原有注释
+void LCD_Init(void) // 第131行代码
+{ // 第132行代码
+    Delay_ms(20); // 第133行代码
+    LCD_Write_Cmd(0x38); Delay_us(5000); // 第134行代码
+    LCD_Write_Cmd(0x38); Delay_us(5000); // 第135行代码
+    LCD_Write_Cmd(0x38); // 第136行代码
+    LCD_Write_Cmd(0x0C); // 第137行代码
+    LCD_Write_Cmd(0x06); // 第138行代码
+    LCD_Write_Cmd(0x01); // 第139行代码
+    Delay_us(5000); // 第140行代码
+} // 第141行代码
+
+// LCDʾַ // 原有注释
+void LCD_ShowString(uint8_t row, uint8_t col, char *str) // 第144行代码
+{ // 第145行代码
+    LCD_Write_Cmd(row ? 0xC0 + col : 0x80 + col); // 第146行代码
+    while(*str) LCD_Write_Data(*str++); // 第147行代码
+} // 第148行代码
+
+// LCDʾ // 原有注释
+void LCD_ShowNum(uint8_t row, uint8_t col, int num) // 第151行代码
+{ // 第152行代码
+    char buf[5], temp[5]; // 第153行代码
+    int i = 0, j = 0; // 第154行代码
+    if(num < 0) { buf[i++] = '-'; num = -num; } // 第155行代码
+    if(num == 0) buf[i++] = '0'; // 第156行代码
+    else { while(num > 0) { temp[j++] = '0' + num % 10; num /= 10; } while(j > 0) buf[i++] = temp[--j]; } // 第157行代码
+    buf[i] = '\0'; // 第158行代码
+    LCD_ShowString(row, col, buf); // 第159行代码
+} // 第160行代码
+
+// DS18B20 IOл // 原有注释
+void DS18B20_IO_OUT(void) // 第163行代码
+{ // 第164行代码
+    GPIO_InitTypeDef g = {GPIO_Pin_7, GPIO_Mode_Out_PP, GPIO_Speed_50MHz}; // 第165行代码
+    GPIO_Init(GPIOB, &g); // 第166行代码
+} // 第167行代码
+
+void DS18B20_IO_IN(void) // 第169行代码
+{ // 第170行代码
+    GPIO_InitTypeDef g = {GPIO_Pin_7, GPIO_Mode_IPU, 0}; // 第171行代码
+    GPIO_Init(GPIOB, &g); // 第172行代码
+} // 第173行代码
+
+// DS18B20λ // 原有注释
+void DS18B20_Initial(void) // 第176行代码
+{ // 第177行代码
+    DS18B20_IO_OUT(); // 第178行代码
+    DQ_OUT = 0; Delay_DS18B20(750); // 第179行代码
+    DQ_OUT = 1; Delay_DS18B20(15); // 第180行代码
+    DS18B20_IO_IN(); Delay_DS18B20(100); // 第181行代码
+} // 第182行代码
+
+// DS18B20дֽ // 原有注释
+void RB_Write_Byte(uint8_t byte) // 第185行代码
+{ // 第186行代码
+    uint8_t i; // 第187行代码
+    DS18B20_IO_OUT(); // 第188行代码
+    for(i = 0; i < 8; i++) // 第189行代码
+    { // 第190行代码
+        DQ_OUT = 0; Delay_DS18B20(2); // 第191行代码
+        DQ_OUT = byte & 0x01; // 第192行代码
+        Delay_DS18B20(60); // 第193行代码
+        DQ_OUT = 1; Delay_DS18B20(2); // 第194行代码
+        byte >>= 1; // 第195行代码
+    } // 第196行代码
+} // 第197行代码
+
+// DS18B20ֽ // 原有注释
+uint8_t RB_Read_Byte(void) // 第200行代码
+{ // 第201行代码
+    uint8_t i, byte = 0; // 第202行代码
+    for(i = 0; i < 8; i++) // 第203行代码
+    { // 第204行代码
+        DS18B20_IO_OUT(); // 第205行代码
+        DQ_OUT = 0; Delay_DS18B20(2); // 第206行代码
+        DQ_OUT = 1; // 第207行代码
+        DS18B20_IO_IN(); Delay_DS18B20(12); // 第208行代码
+        if(DQ_IN) byte |= (0x01 << i); // 第209行代码
+        Delay_DS18B20(50); // 第210行代码
+    } // 第211行代码
+    return byte; // 第212行代码
+} // 第213行代码
+
+// ¶ // 原有注释
+int DS18B20_Read_Temp(void) // 第216行代码
+{ // 第217行代码
+    uint8_t l, h; // 第218行代码
+    DS18B20_Initial(); // 第219行代码
+    RB_Write_Byte(0xCC); // 第220行代码
+    RB_Write_Byte(0x44); // 第221行代码
+    Delay_us(750000); // 第222行代码
+    DS18B20_Initial(); // 第223行代码
+    RB_Write_Byte(0xCC); // 第224行代码
+    RB_Write_Byte(0xBE); // 第225行代码
+    l = RB_Read_Byte(); // 第226行代码
+    h = RB_Read_Byte(); // 第227行代码
+    return ((h << 8) | l) / 16; // 第228行代码
+} // 第229行代码
+
+// ߼ // 原有注释
+void Control_Process(void) // 第232行代码
+{ // 第233行代码
+    int water = (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_4) == 0); // 第234行代码
+    if(water) // 第235行代码
+    { // 第236行代码
+        GPIO_SetBits(GPIOB, GPIO_Pin_6); // 第237行代码
+        GPIO_ResetBits(GPIOB, GPIO_Pin_5); // 第238行代码
+    } // 第239行代码
+    else // 第240行代码
+    { // 第241行代码
+        GPIO_ResetBits(GPIOB, GPIO_Pin_6); // 第242行代码
+        if(current_temp < temp_min) GPIO_SetBits(GPIOB, GPIO_Pin_5); // 第243行代码
+        else GPIO_ResetBits(GPIOB, GPIO_Pin_5); // 第244行代码
+    } // 第245行代码
+} // 第246行代码
+
+// ʾ // 原有注释
+void Display_Process(void) // 第249行代码
+{ // 第250行代码
+    int hot = (current_temp > temp_max); // 第251行代码
+
+    if(current_temp != last_temp) // 第253行代码
+    { // 第254行代码
+        last_temp = current_temp; // 第255行代码
+        LCD_ShowString(0, 0, "T:   C"); // 第256行代码
+        LCD_ShowNum(0, 2, current_temp); // 第257行代码
+    } // 第258行代码
+
+    if(hot != last_hot || temp_max != last_max || temp_min != last_min) // 第260行代码
+    { // 第261行代码
+        if(hot) LCD_ShowString(1, 0, "Water too hot  "); // 第262行代码
+        else // 第263行代码
+        { // 第264行代码
+            LCD_ShowString(1, 0, "                "); // 第265行代码
+            LCD_ShowString(1, 0, "H:"); // 第266行代码
+            LCD_ShowNum(1, 2, temp_max); // 第267行代码
+            LCD_ShowString(1, 5, "C "); // 第268行代码
+            LCD_ShowString(1, 7, "L:"); // 第269行代码
+            LCD_ShowNum(1, 9, temp_min); // 第270行代码
+            LCD_ShowString(1, 12, "C"); // 第271行代码
+        } // 第272行代码
+        last_hot = hot; last_max = temp_max; last_min = temp_min; // 第273行代码
+    } // 第274行代码
+} // 第275行代码
+
+// ͨú // 原有注释
+void Key_Handle(uint8_t pin, int *value, int min_val, int max_val, int step) // 第278行代码
+{ // 第279行代码
+    Delay_us(20000);  //  // 第280行代码
+    if(GPIO_ReadInputDataBit(GPIOB, pin) == 0) // 第281行代码
+    { // 第282行代码
+        *value += step; // 第283行代码
+        if(*value < min_val) *value = min_val; // 第284行代码
+        if(*value > max_val) *value = max_val; // 第285行代码
+    } // 第286行代码
+} // 第287行代码
+
+// жϷ // 原有注释
+
+// TIM2ʱж // 原有注释
+void TIM2_IRQHandler(void) // 第292行代码
+{ // 第293行代码
+    if(TIM_GetITStatus(TIM2, TIM_IT_Update) != RESET) // 第294行代码
+    { // 第295行代码
+        temp_flag = 1; // 第296行代码
+        TIM_ClearITPendingBit(TIM2, TIM_IT_Update); // 第297行代码
+    } // 第298行代码
+} // 第299行代码
+
+// EXTI0ж - PB0¶+ // 原有注释
+void EXTI0_IRQHandler(void) // 第302行代码
+{ // 第303行代码
+    if(EXTI_GetITStatus(EXTI_Line0) != RESET) // 第304行代码
+    { // 第305行代码
+        Key_Handle(GPIO_Pin_0, &temp_max, temp_min, 100, 1); // 第306行代码
+        EXTI_ClearITPendingBit(EXTI_Line0); // 第307行代码
+    } // 第308行代码
+} // 第309行代码
+
+// EXTI1ж - PB1¶- // 原有注释
+void EXTI1_IRQHandler(void) // 第312行代码
+{ // 第313行代码
+    if(EXTI_GetITStatus(EXTI_Line1) != RESET) // 第314行代码
+    { // 第315行代码
+        Key_Handle(GPIO_Pin_1, &temp_max, temp_min, 100, -1); // 第316行代码
+        EXTI_ClearITPendingBit(EXTI_Line1); // 第317行代码
+    } // 第318行代码
+} // 第319行代码
+
+// EXTI2ж - PB2¶+ // 原有注释
+void EXTI2_IRQHandler(void) // 第322行代码
+{ // 第323行代码
+    if(EXTI_GetITStatus(EXTI_Line2) != RESET) // 第324行代码
+    { // 第325行代码
+        Key_Handle(GPIO_Pin_2, &temp_min, 0, temp_max, 1); // 第326行代码
+        EXTI_ClearITPendingBit(EXTI_Line2); // 第327行代码
+    } // 第328行代码
+} // 第329行代码
+
+// EXTI3ж - PB3¶- // 原有注释
+void EXTI3_IRQHandler(void) // 第332行代码
+{ // 第333行代码
+    if(EXTI_GetITStatus(EXTI_Line3) != RESET) // 第334行代码
+    { // 第335行代码
+        Key_Handle(GPIO_Pin_3, &temp_min, 0, temp_max, -1); // 第336行代码
+        EXTI_ClearITPendingBit(EXTI_Line3); // 第337行代码
+    } // 第338行代码
+} // 第339行代码
+
+// EXTI4ж - PB4ȱˮ // 原有注释
+void EXTI4_IRQHandler(void) // 第342行代码
+{ // 第343行代码
+    if(EXTI_GetITStatus(EXTI_Line4) != RESET) // 第344行代码
+    { // 第345行代码
+        if(GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_4) == 0) // 第346行代码
+        { // 第347行代码
+            GPIO_SetBits(GPIOB, GPIO_Pin_6); // 第348行代码
+            GPIO_ResetBits(GPIOB, GPIO_Pin_5); // 第349行代码
+        } // 第350行代码
+        else // 第351行代码
+        { // 第352行代码
+            GPIO_ResetBits(GPIOB, GPIO_Pin_6); // 第353行代码
+        } // 第354行代码
+        EXTI_ClearITPendingBit(EXTI_Line4); // 第355行代码
+    } // 第356行代码
+} // 第357行代码
+
+//  // 原有注释
+int main(void) // 第360行代码
+{ // 第361行代码
+    GPIO_Init_Config(); // 第362行代码
+    LCD_Init(); // 第363行代码
+    DS18B20_Initial(); // 第364行代码
+    TIM2_Init(); // 第365行代码
+    EXTI_Config(); // 第366行代码
+    NVIC_Config(); // 第367行代码
+
+    do { // 第369行代码
+        current_temp = DS18B20_Read_Temp(); // 第370行代码
+    } while(current_temp == 85); // 第371行代码
+
+    Control_Process(); // 第373行代码
+    Display_Process(); // 第374行代码
+
+    while(1) // 第376行代码
+    { // 第377行代码
+        if(temp_flag) // 第378行代码
+        { // 第379行代码
+            temp_flag = 0; // 第380行代码
+            current_temp = DS18B20_Read_Temp(); // 第381行代码
+            Control_Process(); // 第382行代码
+            Display_Process(); // 第383行代码
+        } // 第384行代码
+    } // 第385行代码
+} // 第386行代码

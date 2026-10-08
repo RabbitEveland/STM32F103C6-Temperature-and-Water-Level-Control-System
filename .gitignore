@@ -1,0 +1,18 @@
+# Keil MDK user settings and build intermediates
+*.uvoptx
+*.uvguix.*
+Objects/*
+!Objects/666.hex
+Listings/
+
+# Local assistant/editor state and historical diagnostics
+.agents/
+.cursor/
+build_*.txt
+main.txt
+66.uvprojx
+66.uvoptx
+66.uvguix.*
+嵌入式课程设计代码.zip
+render_gaht_polished/
+polish_gaht_docx.py
